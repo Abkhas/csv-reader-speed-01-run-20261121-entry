@@ -1,4 +1,4 @@
-// Fast drop-in replacement for csv-reader 1.0.0. (round 4)
+// Fast drop-in replacement for csv-reader 1.0.0. (round 5)
 //
 // Same answer as csv-reader for every {text, header}: {columns, rows, errors}.
 // Design: ONE field loop for every record — no fast/slow dispatch, no
@@ -44,6 +44,17 @@ export function run(input) {
   let lineEnd = len;
   let lineEndValid = false;
 
+  // Index of the next CR at or after the position where it was computed
+  // (len when there is none). It is refreshed only when it falls behind
+  // pos, so the total scan for CRs over a run is linear in the text.
+  let nextCR = -1;
+  // Content end of the current line (lineEnd minus a CRLF terminator) and
+  // whether the current line can hold a stray CR. Both are set by
+  // refreshLineEnd and stay valid while lineEnd is valid: a line with no
+  // stray CR cannot gain one as pos advances within it.
+  let lineCend = len;
+  let lineHasStrayCR = true;
+
   // The record being read: the line it starts on and the index in rows it takes (null: the header).
   let recordLine = 1;
   let recordRow = null;
@@ -59,6 +70,15 @@ export function run(input) {
       const ni = text.indexOf('\n', pos);
       lineEnd = ni === -1 ? len : ni;
       lineEndValid = true;
+      if (nextCR < pos) {
+        const r = text.indexOf('\r', pos);
+        nextCR = r === -1 ? len : r;
+      }
+      lineCend =
+        lineEnd < len && lineEnd > pos && text.charCodeAt(lineEnd - 1) === 13
+          ? lineEnd - 1
+          : lineEnd;
+      lineHasStrayCR = nextCR < lineCend;
     }
   }
 
@@ -68,6 +88,9 @@ export function run(input) {
   // cannot hold an LF, so only the CR scan runs. Appends the chunk to `value`.
   function appendQuoted(value, start, end) {
     const s = text.slice(start, end);
+    // The chunk lies inside a line known to hold no stray CR and ends at or
+    // before that line's content end, so it holds neither CR nor LF.
+    if (lineEndValid && end <= lineCend && !lineHasStrayCR) return value === '' ? s : value + s;
     if (lineEndValid && end <= lineEnd) {
       if (s.indexOf('\r') === -1) return value === '' ? s : value + s;
     } else if (s.indexOf('\n') === -1 && s.indexOf('\r') === -1) {
@@ -97,7 +120,7 @@ export function run(input) {
     const ci = text.indexOf(',', pos);
     if (ci !== -1 && ci < lineEnd) {
       const chunk = text.slice(pos, ci);
-      if (chunk.indexOf('\r') === -1) {
+      if (!lineHasStrayCR || chunk.indexOf('\r') === -1) {
         pos = ci + 1;
         fEnded = 'comma';
         return value === '' ? chunk : value + chunk;
@@ -116,10 +139,8 @@ export function run(input) {
       return value;
     }
     // The field ends at the line break (or the end of the text).
-    let cend = lineEnd;
-    if (lineEnd < len && lineEnd > pos && text.charCodeAt(lineEnd - 1) === 13) cend = lineEnd - 1;
-    const chunk = text.slice(pos, cend);
-    if (chunk.indexOf('\r') === -1) {
+    const chunk = text.slice(pos, lineCend);
+    if (!lineHasStrayCR || chunk.indexOf('\r') === -1) {
       if (chunk !== '') value = value === '' ? chunk : value + chunk;
     } else {
       let start = 0;
